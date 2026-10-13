@@ -1,0 +1,9 @@
+# Versions installed on the source Windows / Python 3.13 system.
+playwright==1.62.0
+openpyxl==3.1.5
+PyMySQL==1.2.3
+pywinauto==0.6.9
+Pillow==12.3.0
+pywin32==312
+comtypes==1.4.17
+python-dotenv==1.2.2

@@ -48,3 +48,23 @@ Thumbs.db
 *.mov
 *.wmv
 
+# DocPanel local configuration and artifacts
+
+.auth/
+
+# Local passwords
+.env
+.env.*
+!.env.example
+
+# Generated reports, evidence and local environments
+reports/
+screenshots/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.log
+*.lnk
+example-page.png
