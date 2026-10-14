@@ -155,6 +155,61 @@ def ensure_login():
         return {"Result":"FAIL", "Details":f"PowerScribe startup/login could not be completed ({type(exc).__name__})." + screenshot(window, "login_fail")}
 
 
+def matching_report_editors(window, case_number, selected_only=False):
+    matches = []
+    for editor in window.descendants(control_type="TabItem"):
+        if editor.element_info.automation_id != "reportEditorScreen" or not editor.is_visible():
+            continue
+        if selected_only and not editor.is_selected():
+            continue
+        if any(header_matches(c.window_text(), case_number)
+               for c in editor.children(control_type="Text") if c.is_visible()):
+            matches.append(editor)
+    return matches
+
+
+def report_close_button(button):
+    # The application title-bar Close button must never be used.
+    if button.window_text().strip().lower() != "close" or not button.is_visible() or not button.is_enabled():
+        return False
+    current = button
+    for _ in range(20):
+        info = current.element_info
+        if info.control_type == "TitleBar":
+            return False
+        current = current.parent()
+        if current is None:
+            break
+    return True
+
+
+def has_powerscribe_dialog(window):
+    from pywinauto import Desktop
+    # A confirmation may be an owned top-level window or a child dialog.
+    if any(c.is_visible() for c in window.descendants(control_type="Window")):
+        return True
+    return any(w.is_visible() and w.handle != window.handle
+               for w in Desktop(backend="uia").windows(process=window.process_id()))
+
+
+def close_verified_case(window, case_number):
+    try:
+        if len(matching_report_editors(window, case_number, selected_only=True)) != 1:
+            return {"Clicked": False, "Details": "Close not clicked: the verified case is no longer the active report."}
+        if has_powerscribe_dialog(window):
+            return {"Clicked": False, "Details": "Close not clicked: an application dialog needs manual attention."}
+        buttons = [c for c in window.descendants(control_type="Button") if report_close_button(c)]
+        if len(buttons) != 1:
+            return {"Clicked": False, "Details": "Close not clicked: one report Close control could not be identified."}
+        # Recheck identity immediately before invoking a report action.
+        if len(matching_report_editors(window, case_number, selected_only=True)) != 1:
+            return {"Clicked": False, "Details": "Close not clicked: the active report changed."}
+        buttons[0].invoke()
+        return {"Clicked": True, "Details": "Clicked the PowerScribe report Close button."}
+    except Exception as exc:
+        return {"Clicked": False, "Details": f"PowerScribe report Close button could not be clicked ({type(exc).__name__})."}
+
+
 def verify_case(case_number, timeout=60):
     window = None
     try:
@@ -169,7 +224,10 @@ def verify_case(case_number, timeout=60):
                 # Direct Text children exclude case numbers in prior reports or report body.
                 headers = [c.window_text() for c in editor.children(control_type="Text") if c.is_visible()]
                 if authenticated(window) and any(header_matches(value, case_number) for value in headers):
-                    return {"Result":"PASS", "Details":f"PowerScribe active report opened for the same DocPanel case {case_number}. Report content was not edited or signed." + screenshot(window, "case_loaded")}
+                    evidence = screenshot(window, "case_loaded")
+                    closed = close_verified_case(window, case_number)
+                    return {"Result":"PASS", "Details":f"PowerScribe active report opened for the same DocPanel case {case_number}. Report content was not edited or signed." + evidence,
+                            "CloseClicked": closed["Clicked"], "CloseDetails": closed["Details"]}
             time.sleep(0.5)
         return {"Result":"FAIL", "Details":f"PowerScribe active report did not show DocPanel case {case_number} within {timeout} seconds; same-case opening was not verified." + screenshot(window, "case_fail")}
     except Exception as exc:
@@ -199,6 +257,9 @@ def record_case_check(results, case_number, login_result):
     record_result(results, "PowerScribe", "Same case opens in PowerScribe",
                   result=outcome["Result"], details=outcome["Details"])
     print(f"PowerScribe: {outcome['Result']} - same-case check for {case_number}.", flush=True)
+    if "CloseClicked" in outcome:
+        status = "clicked" if outcome["CloseClicked"] else "not clicked"
+        print(f"PowerScribe report Close: {status} - {outcome['CloseDetails']}", flush=True)
     return outcome["Result"] == "PASS"
 
 

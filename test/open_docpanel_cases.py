@@ -6,6 +6,18 @@ for _directory in (_Path(__file__).resolve().parent, _Path(__file__).resolve().p
         _sys.path.insert(0, str(_directory))
 
 import argparse
+import os
+
+# Resolve the CLI profile before importing configuration or dependent checks.
+# Only the profile name is inherited by child processes, never the password.
+if __name__ == "__main__":
+    _user_parser = argparse.ArgumentParser(add_help=False)
+    _user_parser.add_argument("--user", choices=("user1", "user2"))
+    _user_args, _ = _user_parser.parse_known_args()
+    if _user_args.user is not None:
+        os.environ["DOCPANEL_ACTIVE_USER"] = _user_args.user
+        os.environ["ZENDESK_ACTIVE_USER"] = _user_args.user
+
 import json
 import re
 from contextlib import ExitStack
@@ -742,8 +754,8 @@ def run(playwright: Playwright, debug: bool = False, check: str = "all") -> None
         try:
             try:
                 # PowerScribe is opt-in; skip it during the full run.
-                if check == "powerscribe":
-                # if check in ("all", "powerscribe"):
+                # if check == "powerscribe":
+                if check in ("all", "powerscribe"):
                     from powerscribe_case_checks import report_powerscribe
                     # Keep the independent IC selection but reuse this DocPanel login.
                     # Run only when explicitly selected with --check powerscribe.
@@ -777,6 +789,10 @@ if __name__ == "__main__":
         choices=("all", "cases", "jobs", "case_assignment", "legacy_operations", "case_details", "database", "report_pending", "report_failures", "zendesk", "powerscribe"),
         default="all",
         help="Run only the selected check; default: all.",
+    )
+    parser.add_argument(
+        "--user", choices=("user1", "user2"),
+        help="DocPanel login profile; overrides the configured default for this run.",
     )
     args = parser.parse_args()
     if args.check in ("database", "report_pending", "report_failures"):

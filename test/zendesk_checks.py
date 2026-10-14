@@ -7,6 +7,16 @@ for _directory in (_Path(__file__).resolve().parent, _Path(__file__).resolve().p
         _sys.path.insert(0, str(_directory))
 
 import argparse
+import os
+import hashlib
+
+if __name__ == "__main__":
+    _profile_parser = argparse.ArgumentParser(add_help=False)
+    _profile_parser.add_argument("--user", choices=("user1", "user2"))
+    _profile_args, _ = _profile_parser.parse_known_args()
+    if _profile_args.user is not None:
+        os.environ["ZENDESK_ACTIVE_USER"] = _profile_args.user
+
 from datetime import datetime
 from pathlib import Path
 import re
@@ -18,7 +28,10 @@ from excel_report import record_result, save_excel_report
 
 SECTION = "Zendesk Unassigned Tickets"
 ROOT = Path(__file__).resolve().parent.parent
-STATE = ROOT / ".auth" / "zendesk.json"
+def session_state_path(origin, profile, email):
+    identity = hashlib.sha256((origin + "\n" + email.strip().lower()).encode()).hexdigest()[:16]
+    return ROOT / ".auth" / f"zendesk_{profile}_{identity}.json"
+
 COLUMNS = ["Ticket ID", "Status", "Subject", "Updated", "Requester", "Priority", "Created", "Assignee ID", "Ticket URL"]
 
 
@@ -34,7 +47,7 @@ def view_config():
     return f"https://{parsed.netloc}", match[1]
 
 
-def login(page, origin, timeout=120):
+def login(page, origin, username, login_password, timeout=120):
     page.goto(utill.ZENDESK_URL, wait_until="domcontentloaded")
     deadline = time.monotonic() + timeout
     entered_email = entered_password = clicked_google = False
@@ -51,15 +64,15 @@ def login(page, origin, timeout=120):
                 email = current.get_by_role("textbox", name="Email or phone", exact=True)
                 password = current.locator('input[type="password"]:visible')
                 if not entered_email and email.is_visible():
-                    email.fill(utill.ZENDESK_USERNAME)
+                    email.fill(username)
                     current.get_by_role("button", name="Next", exact=True).click()
                     entered_email = True
                 elif not entered_password and password.count() == 1:
-                    password.fill(utill.ZENDESK_PASSWORD)
+                    password.fill(login_password)
                     current.get_by_role("button", name="Next", exact=True).click()
                     entered_password = True
                 elif not entered_email:
-                    account = current.get_by_text(utill.ZENDESK_USERNAME, exact=True)
+                    account = current.get_by_text(username, exact=True)
                     if account.count() == 1 and account.is_visible():
                         account.click()
                         entered_email = True
@@ -143,16 +156,22 @@ def report_zendesk(playwright, results, headless=False, debug=False):
     browser = None
     try:
         origin, view_id = view_config()
+        try:
+            username, login_password = utill.zendesk_credentials()
+        except (ValueError, RuntimeError) as exc:
+            raise ZendeskCheckError(str(exc)) from None
+        state = session_state_path(origin, utill.ZENDESK_ACTIVE_USER, username)
+        print(f"Zendesk: using {utill.ZENDESK_ACTIVE_USER} login profile.", flush=True)
         browser = playwright.chromium.launch(headless=headless)
         kwargs = {"viewport":{"width":1600,"height":1000}}
-        if STATE.is_file():
-            kwargs['storage_state'] = str(STATE)
+        if state.is_file():
+            kwargs['storage_state'] = str(state)
         context = browser.new_context(**kwargs)
         page = context.new_page()
         page.set_default_timeout(15_000)
-        page = login(page, origin)
-        STATE.parent.mkdir(exist_ok=True)
-        context.storage_state(path=str(STATE))
+        page = login(page, origin, username, login_password)
+        state.parent.mkdir(exist_ok=True)
+        context.storage_state(path=str(state))
         if debug:
             page.pause()
         rows = collect_tickets(context.request, origin, view_id)
@@ -193,5 +212,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--headless', action='store_true')
     parser.add_argument('--debug', action='store_true')
+    parser.add_argument('--user', choices=('user1', 'user2'), help='Zendesk login profile')
     args = parser.parse_args()
     raise SystemExit(0 if run(args.headless and not args.debug, args.debug) else 1)

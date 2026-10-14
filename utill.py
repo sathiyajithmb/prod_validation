@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from dotenv import dotenv_values
 
@@ -15,8 +16,25 @@ def _password(name):
 
 BASE_URL = "https://uat.docpanel.com"
 
-DOCPANEL_EMAIL = "shripalanivel@gmail.com"
-DOCPANEL_PASSWORD = _password("DOCPANEL_PASSWORD")
+# Select one login profile for each run: "user1" or "user2".
+DOCPANEL_ACTIVE_USER = os.environ.get("DOCPANEL_ACTIVE_USER", "user1")
+DOCPANEL_USERS = {
+    "user1": {"email": 'shripalanivel@gmail.com', "password_env": "DOCPANEL_PASSWORD"},
+    "user2": {"email": "", "password_env": "DOCPANEL_USER2_PASSWORD"},
+}
+
+
+def _docpanel_credentials(profile):
+    if profile not in DOCPANEL_USERS:
+        raise ValueError("DOCPANEL_ACTIVE_USER must be user1 or user2.")
+    account = DOCPANEL_USERS[profile]
+    email = account["email"].strip()
+    if not email:
+        raise ValueError(f"Set the email for {profile} in DOCPANEL_USERS in utill.py.")
+    return email, _password(account["password_env"])
+
+
+DOCPANEL_EMAIL, DOCPANEL_PASSWORD = _docpanel_credentials(DOCPANEL_ACTIVE_USER)
 
 # Production settings; the active BASE_URL/DOCPANEL_* above remain UAT.
 PROD_BASE_URL = "https://app.docpanel.com"
@@ -52,7 +70,7 @@ POWERSCRIBE_PASSWORD = _password("POWERSCRIBE_PASSWORD")
 
 # Only these imaging centers are eligible for the independent PowerScribe check.
 # Add the desired integer IC IDs. Empty means not configured, never all centers.
-POWERSCRIBE_IMG_CENTER_IDS = [4110]
+POWERSCRIBE_IMG_CENTER_IDS = [4342]
 
 # Installed PowerScribe executable used for automatic startup.
 # POWERSCRIBE_APP_PATH = 'C:\\Users\\docpanel\\AppData\\Local\\Apps\\2.0\\LETKHCRL.B6C\\XT6VK55C.C15\\nuan...app_fabea4ec5e17cf93_07e7.0003_637fb4e2408ccac6\\Nuance.PSOne.exe'
@@ -76,3 +94,22 @@ DB_REPORT_FAILURES_FROM = "2026-09-28"  # Fixed query cutoff; do not replace wit
 ZENDESK_URL = "https://docpanel.zendesk.com/agent/filters/360071009493"
 ZENDESK_USERNAME = "mohana@docpanel.com"
 ZENDESK_PASSWORD = _password("ZENDESK_PASSWORD")
+
+# Zendesk uses the selected DocPanel profile in a full run.
+# The standalone Zendesk command can select its own profile.
+ZENDESK_ACTIVE_USER = os.environ.get("ZENDESK_ACTIVE_USER", DOCPANEL_ACTIVE_USER)
+ZENDESK_USERS = {
+    "user1": {"email": 'mohana@docpanel.com', "password_env": "ZENDESK_PASSWORD"},
+    "user2": {"email": "", "password_env": "ZENDESK_USER2_PASSWORD"},
+}
+
+
+def zendesk_credentials(profile=None):
+    profile = profile or ZENDESK_ACTIVE_USER
+    if profile not in ZENDESK_USERS:
+        raise ValueError("Zendesk user must be user1 or user2.")
+    account = ZENDESK_USERS[profile]
+    email = account["email"].strip()
+    if not email:
+        raise ValueError(f"Set the email for {profile} in ZENDESK_USERS in utill.py.")
+    return email, _password(account["password_env"])

@@ -82,7 +82,7 @@ Use single-quoted values, for example `DB_PASSWORD='your-password'`.
 For a literal single quote inside a quoted password, escape it with a backslash.
 Password interpolation is disabled. The file is resolved relative to `utill.py`,
 independently of the terminal working directory. Missing or empty values produce
-an error naming the setting, without displaying its password. All six entries
+an error naming the setting, without displaying its password. The selected DocPanel profile password and the other service passwords
 are required when importing the configuration. Shell environment variables do
 not override this file. `.env` files are ignored by Git; `.env.example` contains
 only empty placeholders.
@@ -247,3 +247,51 @@ creation as a successful test run.
 Native app automation requires the desktop to remain available and unlocked.
 This project checks case opening and evidence; do not use report editing/signing
 as a workaround for a failed check.
+
+## Choose a DocPanel login user
+
+In `utill.py`, set `DOCPANEL_ACTIVE_USER = "user1"` or `"user2"`.
+Set each email under `DOCPANEL_USERS`. User1 keeps the existing email and
+`DOCPANEL_PASSWORD` entry in `.env`. Fill `DOCPANEL_USER2_PASSWORD` in `.env`
+before selecting user2. The unused user's password is not required.
+This selects one user per run, not two users in the same run. The run command
+and `BASE_URL` stay unchanged. Both accounts must support the existing
+OS Supervisor login flow and have access to the checks being run.
+
+```python
+DOCPANEL_ACTIVE_USER = "user2"
+```
+
+```cmd
+.venv\Scripts\python.exe test\open_docpanel_cases.py
+```
+
+### Select a user in the run command
+
+```cmd
+.venv\Scripts\python.exe test\open_docpanel_cases.py --user user1
+.venv\Scripts\python.exe test\open_docpanel_cases.py --user user2
+```
+
+The `--user` option overrides the default for this run without editing any file.
+It also works with `--check`, for example `--user user2 --check cases`.
+Fill the selected profile email in `DOCPANEL_USERS` and its password in `.env`
+before running. Without `--user`, `DOCPANEL_ACTIVE_USER` from the environment is
+used if set, otherwise the default is user1. This selects a login account, not
+an environment: `BASE_URL` still controls UAT or Production.
+
+### Zendesk user1 and user2
+
+Set both Zendesk emails under `ZENDESK_USERS` in `utill.py`.
+User1 uses `.env` entry `ZENDESK_PASSWORD`; user2 uses `ZENDESK_USER2_PASSWORD`.
+A full run with `--user user2` selects user2 for both DocPanel and Zendesk.
+For Zendesk alone, these commands select only the Zendesk profile:
+
+```cmd
+.venv\Scripts\python.exe test\zendesk_checks.py --user user1
+.venv\Scripts\python.exe test\zendesk_checks.py --user user2
+```
+
+Saved Zendesk sessions are separated by profile, email and Zendesk origin.
+The old shared `.auth/zendesk.json` is not reused. Each profile may need Google
+verification on its first login. The configured Zendesk view URL remains shared.
