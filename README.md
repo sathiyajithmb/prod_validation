@@ -98,7 +98,7 @@ Do not put credentials in this README or report output.
 | `REPORT_PENDING_EXCLUDED_IMG_CENTER_IDS` | Imaging centers excluded from Report Pending |
 | `CASE_DETAILS_EXCLUDED_IMG_CENTER_IDS` | Imaging centers excluded from case-detail sampling; supports multiple IDs |
 | `DB_FAILURES_CONFIG`, `DB_REPORT_FAILURES_DATABASE` | Separate Report Failures connection |
-| `DB_REPORT_FAILURES_FROM` | Keep `"Today"` for the runtime local date cutoff |
+| `DB_REPORT_FAILURES_FROM` | Fixed cutoff `"2026-09-28"`; do not change to the run date |
 | `POWERSCRIBE_USERNAME`, `POWERSCRIBE_PASSWORD` | PowerScribe login |
 | `POWERSCRIBE_IMG_CENTER_IDS` | PowerScribe imaging-center allowlist; currently includes 4110 |
 | `POWERSCRIBE_APP_PATH` | Actual PowerScribe executable path on this machine |
@@ -128,8 +128,7 @@ Test-NetConnection localhost -Port 33069
 
 A successful TCP check confirms only that the port is reachable, not database
 credentials or query permissions. The queries require read access. Report Pending
-uses the database server's midnight seven days ago; Report Failures with `Today`
-uses the Python machine's date. Check the machine clock/time zone.
+uses the database server's midnight seven days ago; Report Failures always uses the configured fixed cutoff `2026-09-28`.
 
 ## Run all checks
 

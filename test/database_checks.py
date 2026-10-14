@@ -83,8 +83,7 @@ def report_database_checks(results, only=None):
     if only not in (None, "Report Pending", "Report Failures"):
         raise ValueError("Unknown database report selection")
     base = dict(utill.DB_CONFIG)
-    configured_since = utill.DB_REPORT_FAILURES_FROM
-    since = date.today().isoformat() if configured_since == "Today" else configured_since
+    since = utill.DB_REPORT_FAILURES_FROM  # Fixed cutoff, independent of the run date.
     checks = [
         ("Report Pending", base, utill.DB_REPORT_PENDING_DATABASE,
          REPORT_PENDING_SQL, None, "After midnight 7 days ago (database server time)"),

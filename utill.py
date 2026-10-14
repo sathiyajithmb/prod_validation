@@ -70,7 +70,7 @@ DB_FAILURES_CONFIG = {
     "write_timeout": 30,
 }
 DB_REPORT_FAILURES_DATABASE = "messageStorage"
-DB_REPORT_FAILURES_FROM = "Today"  # Resolved on each run using the local computer date.
+DB_REPORT_FAILURES_FROM = "2026-09-28"  # Fixed query cutoff; do not replace with the run date.
 
 # Zendesk Unassigned tickets (Google SSO).
 ZENDESK_URL = "https://docpanel.zendesk.com/agent/filters/360071009493"
