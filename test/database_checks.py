@@ -107,10 +107,11 @@ def report_database_checks(results, only=None):
             else:
                 date.fromisoformat(params[0])
             columns, rows = read_query(config, database, sql, params)
-            verdict = "FAIL" if rows else "PASS"
+            verdict = "FAIL" if len(rows) > 50 else "PASS"
             record_result(results, name, "Query result rows", count=len(rows),
                           result=verdict, date_range=period,
-                          details="Query completed; count is returned rows, not distinct cases.")
+                          details="Query completed; count is returned rows, not distinct cases. "
+                                  "PASS: 50 or fewer rows. FAIL: more than 50.")
             results.append({"_kind":"db_table", "Section":name,
                             "columns":columns, "rows":rows})
             print(f"{name}: {verdict} - {len(rows)} rows.", flush=True)

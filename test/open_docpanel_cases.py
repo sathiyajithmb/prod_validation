@@ -20,13 +20,15 @@ if __name__ == "__main__":
 
 import json
 import re
+import time
 from contextlib import ExitStack
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from playwright.sync_api import (
-    Error as PlaywrightError, Page, Playwright, Request, Response, expect, sync_playwright,
+    Error as PlaywrightError, TimeoutError as PlaywrightTimeoutError,
+    Page, Playwright, Request, Response, expect, sync_playwright,
 )
 
 from utill import BASE_URL, DOCPANEL_EMAIL, DOCPANEL_PASSWORD
@@ -53,9 +55,19 @@ def is_dashboard_response(response: Response) -> bool:
 def finish_dashboard_update(page: Page, response: Response) -> None:
     if not response.ok:
         raise RuntimeError(f"Dashboard request failed: HTTP {response.status}")
-    # Reading the body waits for completion without leaving a finished-task
-    # callback behind in this installed Playwright version.
-    response.body()
+    # This Playwright version leaves a background close task after finished().
+    # Public request timing is updated by requestfinished/requestfailed events.
+    # Poll it without fetching a cached body or creating that background task.
+    request = response.request
+    deadline = time.monotonic() + 60
+    while True:
+        if request.failure:
+            raise RuntimeError("Dashboard request did not finish successfully.")
+        if request.timing.get("responseEnd", -1) >= 0:
+            break
+        if time.monotonic() >= deadline:
+            raise RuntimeError("Dashboard request completion timed out after 60 seconds.")
+        page.wait_for_timeout(100)
     wait_for_results(page)
 
 
@@ -85,8 +97,31 @@ def login(page: Page) -> None:
     page.get_by_role("button", name="Continue", exact=True).click()
     page.get_by_text("OS Supervisor", exact=True).click()
     page.get_by_role("textbox", name="Password", exact=True).fill(DOCPANEL_PASSWORD)
-    page.get_by_role("button", name="Log In", exact=True).click()
-    page.wait_for_url(re.compile(r"^" + re.escape(BASE_URL + "/admin/")), timeout=60_000)
+    finish_docpanel_login(page)
+
+
+def finish_docpanel_login(page: Page) -> None:
+    """Accept an already-completed redirect instead of waiting on a vanished button."""
+    admin_url = re.compile(r"^" + re.escape(BASE_URL + "/admin/"))
+    if not admin_url.match(page.url):
+        try:
+            # Production Auth0 uses Continue; the UAT form uses Log In.
+            page.get_by_role(
+                "button", name=re.compile(r"^(?:Log In|Continue)$", re.I)
+            ).filter(visible=True).click(timeout=10_000)
+        except PlaywrightTimeoutError:
+            # Auth redirects may remove the button while Playwright is locating it.
+            # Do not retry submission; require arrival at the configured Admin origin.
+            pass
+    if not admin_url.match(page.url):
+        print("DocPanel: waiting for Admin page. Complete MFA in the browser/authenticator if prompted.", flush=True)
+    try:
+        page.wait_for_url(admin_url, wait_until="domcontentloaded", timeout=180_000)
+    except PlaywrightTimeoutError:
+        raise RuntimeError(
+            "DocPanel login did not reach the configured Admin page. "
+            "Check the browser for MFA, a login error, or an unexpected environment redirect."
+        ) from None
     wait_for_results(page)
 
 
@@ -436,6 +471,7 @@ def assignment_grid(page: Page, name: str):
 
 def check_assignment_table(page: Page, name: str) -> tuple[int, str]:
     button = assignment_button(page, name)
+    print(f"  {name}: verifying tab and selected state", flush=True)
     expect(button).to_be_visible()
     expect(button).to_have_class(re.compile(r"\blightgreenstyle\b"))
     badge = re.search(r"\(([\d,]+)\)", button.inner_text())
@@ -443,6 +479,7 @@ def check_assignment_table(page: Page, name: str) -> tuple[int, str]:
         raise RuntimeError(f"{name}: could not read tab count")
     count = int(badge.group(1).replace(",", ""))
     # Verify the data grid for this tab rather than an unrelated radiologist list.
+    print(f"  {name}: verifying grid and loaded rows", flush=True)
     grid = assignment_grid(page, name)
     expect(grid).to_have_count(1, timeout=90_000)
     expect(page.locator("#spinner:visible")).to_have_count(0, timeout=90_000)
@@ -456,6 +493,7 @@ def check_assignment_table(page: Page, name: str) -> tuple[int, str]:
     else:
         expect(rows).to_have_count(0, timeout=90_000)
         expect(grid.locator(".ag-overlay-no-rows-center")).to_be_visible(timeout=90_000)
+    print(f"  {name}: verifying grid row-count attribute", flush=True)
     row_count = grid.locator("[role=treegrid]").get_attribute("aria-rowcount")
     if row_count is None:
         raise RuntimeError(f"{name}: data grid has no loaded row count")
@@ -500,8 +538,21 @@ def report_case_assignment(page: Page, results=None) -> None:
     finish_assignment_request(page, initial.value)
     try:
         _, cached_unfulfilled_rows = check_assignment_table(page, "Un-Fulfilled")
-    except (AssertionError, PlaywrightError, RuntimeError):
-        raise RuntimeError("Initial Un-Fulfilled assignment data did not load.") from None
+    except (AssertionError, PlaywrightError, RuntimeError) as exc:
+        reason = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+        message = f"Initial Un-Fulfilled assignment check failed: {reason}"
+        folder = Path(__file__).resolve().parent.parent / "screenshots"
+        folder.mkdir(exist_ok=True)
+        shot = folder / f"assignment_initial_fail_{datetime.now():%Y%m%d_%H%M%S_%f}.png"
+        try:
+            page.screenshot(path=str(shot), full_page=True, timeout=10_000)
+            message += f" Screenshot: {shot}"
+        except PlaywrightError:
+            pass
+        print(message, flush=True)
+        print("Assignment grid headers:", page.locator(".ag-root-wrapper:visible .ag-header-cell-text").all_text_contents(), flush=True)
+        record_result(results, "Case Assignment", "Initial Un-Fulfilled", result="FAIL", details=message)
+        raise RuntimeError(message) from None
 
     failures = []
     for name, filters in ASSIGNMENT_TABS.items():
@@ -672,6 +723,18 @@ def debug_checkpoint(page: Page, enabled: bool, label: str) -> None:
 
 def run(playwright: Playwright, debug: bool = False, check: str = "all") -> None:
     results = []
+    def run_section(section, action):
+        start = len(results)
+        try:
+            return action()
+        except Exception as exc:
+            if not any(row.get("Result") == "FAIL" for row in results[start:]):
+                record_result(results, section, "Execution", result="FAIL",
+                              details=f"Check did not complete ({type(exc).__name__}).")
+            print(f"{section}: FAIL - {type(exc).__name__}; remaining checks will continue.", flush=True)
+            if check != "all":
+                raise
+            return False
     if check in ("database", "report_pending", "report_failures"):
         from database_checks import report_database_checks
         try:
@@ -727,18 +790,18 @@ def run(playwright: Playwright, debug: bool = False, check: str = "all") -> None
             login(page)
         if check in ("all", "jobs"):
             debug_checkpoint(page, debug, "3. Job status counts")
-            report_jobs(page, results)
+            run_section("Jobs Dashboard", lambda: report_jobs(page, results))
         if check in ("all", "case_assignment"):
             debug_checkpoint(page, debug, "4. Case Assignment")
-            report_case_assignment(page, results)
+            run_section("Case Assignment", lambda: report_case_assignment(page, results))
         if check in ("all", "legacy_operations"):
             debug_checkpoint(page, debug, "5. Legacy Operations")
-            report_legacy_operations(page, results)
+            run_section("Legacy Operations", lambda: report_legacy_operations(page, results))
         if check in ("all", "case_details"):
             from case_details_checks import report_case_details
             debug_checkpoint(page, debug, "6. Case Details and Eunity")
-            # Multi-Monitor temporarily disabled. Change False to True below to re-enable.
-            if not report_case_details(playwright, results, debug=debug, page=page, multimonitor=False):
+            passed = run_section("Case Details", lambda: report_case_details(playwright, results, debug=debug, page=page))
+            if not passed and check != "all":
                 raise SystemExit(1)
         debug_checkpoint(page, debug, "Checks complete; resume to save Excel and close browser")
     except Exception as exc:
@@ -753,12 +816,10 @@ def run(playwright: Playwright, debug: bool = False, check: str = "all") -> None
     finally:
         try:
             try:
-                # PowerScribe is opt-in; skip it during the full run.
-                # if check == "powerscribe":
-                if check in ("all", "powerscribe"):
+                # PowerScribe stays opt-in because its desktop bridge needs separate troubleshooting.
+                if check == "powerscribe":
                     from powerscribe_case_checks import report_powerscribe
                     # Keep the independent IC selection but reuse this DocPanel login.
-                    # Run only when explicitly selected with --check powerscribe.
                     report_powerscribe(playwright, results, debug=debug,
                                       page=page if not page.is_closed() else None)
             finally:

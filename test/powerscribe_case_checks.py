@@ -31,8 +31,89 @@ def imaging_center_ids():
     return list(dict.fromkeys(ids))
 
 
-def select_powerscribe_case(cases, case_number_filter=None):
-    ids = imaging_center_ids()
+def configured_imaging_centers():
+    """Resolve configured IDs without depending on display names in config."""
+    ids = list(dict.fromkeys(imaging_center_ids()))
+    if not ids:
+        return []
+    sql = ("SELECT user_id, organisation_name FROM users WHERE user_id IN ("
+           + ", ".join(["%s"] * len(ids)) + ")")
+    _, rows = read_query(utill.DB_CONFIG, utill.DB_REPORT_PENDING_DATABASE, sql, tuple(ids))
+    names = {}
+    for row in rows:
+        center = int(row["user_id"])
+        name = (row["organisation_name"] or "").strip()
+        if center in names and names[center] != name:
+            raise RuntimeError("Imaging-center name lookup is ambiguous.")
+        names[center] = name
+    if any(not names.get(center) for center in ids):
+        raise RuntimeError("Configured PowerScribe imaging-center name was not found.")
+    return [(center, names[center]) for center in ids]
+
+
+def filter_imaging_center(page, name):
+    """Select the center once and verify its checkbox before applying."""
+    stage = "locating Imaging Centers dropdown"
+    try:
+        if not page.locator("#CaseStatus").is_visible():
+            page.locator(".filterUpArrow:visible").click()
+        label = page.get_by_text("Imaging Centers", exact=True).filter(visible=True)
+        container = label.locator("xpath=ancestor::*[.//*[contains(@class,'dropdown-toggle')]][1]")
+        control = container.locator(".dropdown-toggle:visible")
+        expect(control).to_have_count(1, timeout=15_000)
+        control.click()
+        menu = page.locator(".dropdown-menu.show:visible")
+        stage = "finding the imaging-center checkbox"
+        search = menu.locator('input:not([type="checkbox"]):not([type="hidden"]):visible')
+        if search.count() == 1:
+            search.fill(name)
+        option = menu.get_by_text(name, exact=True)
+        expect(option).to_have_count(1, timeout=15_000)
+        checkbox = menu.get_by_role("checkbox", name=name, exact=True)
+        if checkbox.count() != 1:
+            checkbox = option.locator("xpath=ancestor::*[.//input[@type='checkbox']][1]").locator('input[type="checkbox"]')
+        expect(checkbox).to_have_count(1, timeout=15_000)
+        # Clicking an already selected option would remove the desired filter.
+        if not checkbox.is_checked():
+            option.click()
+        expect(checkbox).to_be_checked(timeout=15_000)
+        stage = "applying the selected imaging center"
+        control.click()
+        with page.expect_response(is_dashboard_response, timeout=60_000) as updated:
+            page.get_by_role("button", name="Apply", exact=True).click()
+        finish_dashboard_update(page, updated.value)
+    except Exception as exc:
+        message = f"Imaging center {name}: failed while {stage} ({type(exc).__name__})."
+        try:
+            folder = Path(__file__).resolve().parent.parent / "screenshots"
+            folder.mkdir(exist_ok=True)
+            path = folder / f"powerscribe_filter_fail_{datetime.now():%Y%m%d_%H%M%S_%f}.png"
+            page.screenshot(path=str(path), full_page=True, timeout=10_000)
+            message += f" Screenshot: {path}"
+        except Exception:
+            message += " Screenshot unavailable."
+        raise PowerScribeNavigationError(message) from exc
+
+
+def collect_powerscribe_case(page, case_number=None):
+    for center_id, name in configured_imaging_centers():
+        # Reset between centers so status selection cannot toggle off In Progress.
+        prepare_shared_dashboard(page)
+        print(f"PowerScribe: applying imaging center {name} (IC {center_id}).", flush=True)
+        filter_imaging_center(page, name)
+        print(f"PowerScribe: searching imaging center {name} (IC {center_id}).", flush=True)
+        def select_for_center(cases, requested=None):
+            return select_powerscribe_case(cases, requested, allowed_ids=[center_id])
+        selected = collect_inprogress_cases(
+            page, [], POWERSCRIBE_CASE_DATE_RANGE, case_number,
+            select_cases=select_for_center)
+        if selected:
+            return selected
+    return []
+
+
+def select_powerscribe_case(cases, case_number_filter=None, *, allowed_ids=None):
+    ids = imaging_center_ids() if allowed_ids is None else allowed_ids
     if not ids:
         raise ValueError("Set POWERSCRIBE_IMG_CENTER_IDS in utill.py.")
     candidates = {item["number"]: item for item in cases
@@ -110,18 +191,19 @@ def open_powerscribe_case(page, item, debug=False):
 
 
 def prepare_shared_dashboard(page):
-    """Refresh the existing dashboard without replacing its authenticated session."""
+    """Prepare filter controls without waiting for the unfiltered case response."""
     dashboard_url = f"{BASE_URL}/admin/#/Dashboard/1"
-    with page.expect_response(is_dashboard_response, timeout=60_000) as initial:
-        # Navigating to the same SPA URL may not issue a dashboard request.
-        if page.url.rstrip("/") == dashboard_url.rstrip("/"):
-            page.reload(wait_until="domcontentloaded")
-        else:
-            page.goto(dashboard_url, wait_until="domcontentloaded")
-    finish_dashboard_update(page, initial.value)
-    with page.expect_response(is_dashboard_response, timeout=60_000) as reset:
-        page.get_by_role("button", name="Reset", exact=True).click()
-    finish_dashboard_update(page, reset.value)
+    if page.url.rstrip("/") != dashboard_url.rstrip("/"):
+        page.goto(dashboard_url, wait_until="domcontentloaded")
+    # Do not reload an already open dashboard or wait for its ALL-cases request.
+    reset = page.get_by_role("button", name="Reset", exact=True)
+    expect(reset).to_be_visible(timeout=60_000)
+    expect(reset).to_be_enabled(timeout=60_000)
+    reset.click()
+    status = page.locator("#CaseStatus")
+    if not status.is_visible():
+        page.locator(".filterUpArrow:visible").click()
+    expect(status).to_be_visible(timeout=30_000)
 
 
 def report_powerscribe(playwright, results, headless=False, debug=False, case_number=None, *, page=None):
@@ -150,20 +232,16 @@ def report_powerscribe(playwright, results, headless=False, debug=False, case_nu
             context = browser.new_context(viewport={"width":1440,"height":1000})
             page = context.new_page()
             page.set_default_timeout(60_000)
-            with page.expect_response(is_dashboard_response, timeout=60_000) as initial:
-                login(page)
-            finish_dashboard_update(page, initial.value)
+            login(page)
         else:
-            stage = "reusing DocPanel login: dashboard navigation response"
+            stage = "reusing DocPanel login"
             print("PowerScribe: reusing DocPanel login...", flush=True)
-            prepare_shared_dashboard(page)
         stage = "preparing the DocPanel session"
         page.context.grant_permissions(["local-network-access"], origin=BASE_URL)
         stage_done("DocPanel session ready")
         stage = "selecting an eligible IC case"
         print("PowerScribe: selecting an eligible IC case...", flush=True)
-        selected = collect_inprogress_cases(page, [], POWERSCRIBE_CASE_DATE_RANGE, case_number,
-                                            select_cases=select_powerscribe_case)
+        selected = collect_powerscribe_case(page, case_number)
         stage_done("case selection and IC lookup")
         if not selected:
             record_result(results, "PowerScribe", "Same case opens in PowerScribe", result="SKIP",
@@ -179,7 +257,7 @@ def report_powerscribe(playwright, results, headless=False, debug=False, case_nu
         stage_done("app startup / login")
         start = len(results)
         if logged_in["Result"] == "PASS":
-            # Open only this separately selected case; no Unity or Multi-Monitor checks.
+            # Open only this separately selected PowerScribe case.
             stage = "opening the selected case in DocPanel"
             open_powerscribe_case(page, item, debug)
             stage_done("open selected case")
@@ -191,8 +269,17 @@ def report_powerscribe(playwright, results, headless=False, debug=False, case_nu
             row["Details"] = identity + row["Details"]
         return passed
     except Exception as exc:
-        failure = (str(exc) if isinstance(exc, PowerScribeNavigationError)
+        failure = (str(exc) if isinstance(exc, PowerScribeNavigationError) or type(exc) is RuntimeError
                    else f"PowerScribe {stage} failed ({type(exc).__name__}).")
+        if page is not None and not page.is_closed():
+            try:
+                folder = Path(__file__).resolve().parent.parent / "screenshots"
+                folder.mkdir(exist_ok=True)
+                shot = folder / f"powerscribe_check_fail_{datetime.now():%Y%m%d_%H%M%S_%f}.png"
+                page.screenshot(path=str(shot), full_page=True, timeout=10_000)
+                failure += f" Screenshot: {shot}"
+            except Exception:
+                pass
         record_result(results, "PowerScribe", "Same case opens in PowerScribe", result="FAIL",
                       details=identity + failure)
         print("PowerScribe: FAIL - " + failure, flush=True)

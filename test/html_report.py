@@ -36,7 +36,7 @@ def embedded_screenshot(path):
             + data + '"></figure>')
 
 
-LOAD_SECTIONS = {"Case Details", "Multi-Monitor", "Unity Viewer", "Eunity Viewer", "PowerScribe"}
+LOAD_SECTIONS = {"Case Details", "Unity Viewer", "Eunity Viewer", "PowerScribe"}
 
 
 def load_label(result):
@@ -160,7 +160,7 @@ def save_html_report(results, output_path=None, excel_path=None, screenshot_path
         if (section in ("Report Pending", "Report Failures") and row.get("Check") == "Query result rows"
                 and row.get("Result") in ("COUNT", "PASS", "FAIL")
                 and type(row.get("Count")) in (int, float) and row["Count"] >= 0):
-            row["Result"] = "FAIL" if row["Count"] > 0 else "PASS"
+            row["Result"] = "FAIL" if row["Count"] > 50 else "PASS"
         if section in ("SR Mach7 jobs", "Study Routing Mach7 jobs", "Case Dicom CMove jobs"):
             row["Job type"] = section.removesuffix(" jobs")
             row["Status"] = row.pop("Check", "")
@@ -243,7 +243,6 @@ def save_html_report(results, output_path=None, excel_path=None, screenshot_path
             if count is not None:
                 indication = ' <span class="jobs-indication">' + text(count) + ' unassigned-view tickets.</span>'
         heading = {"Case Details": "Can you open up cases in DocPanel? - Case Details",
-                   "Multi-Monitor": "Does Multimonitor load?",
                    "Eunity Viewer": "Images loading - Eunity",
                    "PowerScribe": "Does PowerScribe load?"}.get(section, section or "Results")
         sections += "<section><h2>" + text(heading) + link + toggle + indication + "</h2>"

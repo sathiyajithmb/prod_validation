@@ -14,13 +14,13 @@ def _password(name):
     return value
 
 
-BASE_URL = "https://uat.docpanel.com"
+BASE_URL = "https://app.docpanel.com"
 
 # Select one login profile for each run: "user1" or "user2".
 DOCPANEL_ACTIVE_USER = os.environ.get("DOCPANEL_ACTIVE_USER", "user1")
 DOCPANEL_USERS = {
     "user1": {"email": 'shripalanivel@gmail.com', "password_env": "DOCPANEL_PASSWORD"},
-    "user2": {"email": "", "password_env": "DOCPANEL_USER2_PASSWORD"},
+    "user2": {"email": "mohana@docpanel.com", "password_env": "DOCPANEL_USER2_PASSWORD"},
 }
 
 
@@ -36,17 +36,13 @@ def _docpanel_credentials(profile):
 
 DOCPANEL_EMAIL, DOCPANEL_PASSWORD = _docpanel_credentials(DOCPANEL_ACTIVE_USER)
 
-# Production settings; the active BASE_URL/DOCPANEL_* above remain UAT.
-PROD_BASE_URL = "https://app.docpanel.com"
-PROD_DOCPANEL_EMAIL = "shripalanivel@gmail.com"
-PROD_DOCPANEL_PASSWORD = _password("PROD_DOCPANEL_PASSWORD")
 
 
 # Database report connection. Fill these locally; no credentials are printed.
 DB_CONFIG = {
     'host': 'localhost',
-    'port': 33061,
-    'user': 'root',
+    'port': 33063,
+    'user': 'mohana',
     'password': _password("DB_PASSWORD"),
     'charset': 'utf8mb4',
     'connect_timeout': 10,
@@ -60,22 +56,22 @@ REPORT_PENDING_EXCLUDED_IMG_CENTER_IDS = [
     2751, 2564, 2611, 107, 2720, 2273, 585, 597, 603, 3645, 2795
 ]
 
-# Imaging centers excluded from Case Details, Unity and Multi-Monitor sampling.
+# Imaging centers excluded from Case Details and Eunity sampling.
 # Add multiple integer IDs, for example [4215, 1234].
 CASE_DETAILS_EXCLUDED_IMG_CENTER_IDS = [4215]  # Peer Review Test IC
 
 # PowerScribe login credentials.
-POWERSCRIBE_USERNAME = "mohana.dineshkumar"
+POWERSCRIBE_USERNAME = 'mohana.dinesh'
 POWERSCRIBE_PASSWORD = _password("POWERSCRIBE_PASSWORD")
 
 # Only these imaging centers are eligible for the independent PowerScribe check.
 # Add the desired integer IC IDs. Empty means not configured, never all centers.
-POWERSCRIBE_IMG_CENTER_IDS = [4342]
+POWERSCRIBE_IMG_CENTER_IDS = [1829]
 
 # Installed PowerScribe executable used for automatic startup.
 # POWERSCRIBE_APP_PATH = 'C:\\Users\\docpanel\\AppData\\Local\\Apps\\2.0\\LETKHCRL.B6C\\XT6VK55C.C15\\nuan...app_fabea4ec5e17cf93_07e7.0003_637fb4e2408ccac6\\Nuance.PSOne.exe'
 POWERSCRIBE_APP_PATH = ""
-POWERSCRIBE_DEPLOYMENT_URL = "https://pstest.docpanel.com/PSOneReportingClient/Client/Nuance.PSOne.application"
+POWERSCRIBE_DEPLOYMENT_URL = "https://psone.docpanel.com/PSOneReportingClient/Client/Nuance.PSOne.application"
 # Separate connection for Report Failures (messageStorage).
 DB_FAILURES_CONFIG = {
     "host": "localhost",
@@ -113,3 +109,6 @@ def zendesk_credentials(profile=None):
     if not email:
         raise ValueError(f"Set the email for {profile} in ZENDESK_USERS in utill.py.")
     return email, _password(account["password_env"])
+
+# PowerScribe client reference; current UI automation does not pass a client ID.
+POWERSCRIBE_CLIENT_ID = 1829

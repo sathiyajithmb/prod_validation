@@ -20,12 +20,10 @@ Playwright/
     powerscribe_checks.py
     database_checks.py
     zendesk_checks.py
-    multimonitor_checks.py
     excel_report.py
     html_report.py
     report_theme.py
     legacy_metrics.py
-    start_multimonitor_debug.ps1
   reports/
   screenshots/
 ```
@@ -42,7 +40,6 @@ existing project-root locations.
 - PowerScribe One and the DocPanel Nuance proxy installed and configured for
   PowerScribe checks. Confirm manual login and case opening work first.
 - An unlocked, interactive Windows desktop for native application automation.
-- DocPanel WebViewer only when running Multi-Monitor checks.
 
 Copy the entire `test/` folder plus root `utill.py`, `.env`, and `requirements.txt`. Old `reports`, `screenshots`,
 `__pycache__`, `.pytest_cache`, and `.venv` folders are not needed.
@@ -73,8 +70,8 @@ Only passwords are read from `.env` beside `utill.py`. URLs, usernames, ports,
 IC lists, and other settings remain in `utill.py`. Existing Python variable names
 and database configuration dictionaries are unchanged.
 
-On a new machine, copy `.env.example` to `.env` and fill all six entries:
-`DOCPANEL_PASSWORD`, `PROD_DOCPANEL_PASSWORD`, `DB_PASSWORD`,
+On a new machine, copy `.env.example` to `.env` and fill the required password entries:
+`DOCPANEL_PASSWORD`, `DB_PASSWORD`,
 `DB_FAILURES_PASSWORD`, `POWERSCRIBE_PASSWORD`, and `ZENDESK_PASSWORD`.
 The current machine's passwords have already been migrated to `.env`.
 
@@ -140,7 +137,7 @@ The main run includes dashboards, Case Assignment, Legacy Operations, case detai
 Eunity, database reports, and Zendesk. DocPanel browser checks share
 the authenticated session where supported. Zendesk is the last report section.
 
-**Multi-Monitor and PowerScribe are excluded from the full run.** Run PowerScribe
+**PowerScribe is excluded from the full run.** Run PowerScribe
 separately with `--check powerscribe` or `python test/powerscribe_case_checks.py`. Case-detail sampling uses up to two random
 eligible In Progress cases with Study Status Diagnostic, applying IC exclusions.
 Eunity uses those same selected Diagnostic cases. PowerScribe independently
@@ -161,7 +158,7 @@ Use the following command, replacing `jobs` with a value from the table:
 | `jobs` | Jobs Dashboard counts and job details |
 | `case_assignment` | Case Assignment tabs |
 | `legacy_operations` | Legacy Operations |
-| `case_details` | Case Details and Eunity; Multi-Monitor disabled in this runner |
+| `case_details` | Case Details and Eunity |
 | `powerscribe` | PowerScribe same-case check |
 | `report_pending` | Only Report Pending database query |
 | `report_failures` | Only Report Failures database query |
@@ -180,7 +177,7 @@ Database-only modes do not launch the DocPanel browser.
 # Optional exact case: replace the example with an eligible current case.
 .\.venv\Scripts\python.exe test/powerscribe_case_checks.py --case-number 2062921
 
-# Case Details + Eunity + Multi-Monitor (enabled in this standalone runner)
+# Case Details + Eunity
 .\.venv\Scripts\python.exe test/case_details_checks.py
 
 # Zendesk only
@@ -195,23 +192,6 @@ Diagnostic, fall within the last two days, and belong to the configured
 imaging-center allowlist. Selecting a case does not guarantee that
 PowerScribe opens it: the result records what was actually verified.
 
-## Multi-Monitor setup (optional)
-
-Install DocPanel WebViewer. Check `$viewerExe` in
-`test/start_multimonitor_debug.ps1` matches its installed executable path.
-The standalone check attempts automatic startup. If the app is already open
-without debugging, close it normally first, then rerun. Existing case tabs are
-not forcibly closed by the launcher.
-
-Manual startup when needed:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\test\start_multimonitor_debug.ps1
-```
-
-The script starts local debugging on `127.0.0.1:9223`, which lets the automation
-inspect the desktop viewer. This is separate from database ports 33061/33069.
-It does not enable Multi-Monitor in `open_docpanel_cases.py`.
 
 ## Reports and evidence
 
@@ -239,7 +219,6 @@ creation as a successful test run.
 | MySQL error 2003 | Check the configured host/port and database tunnel/VPN |
 | PowerScribe executable not found | Update `POWERSCRIBE_APP_PATH` |
 | PowerScribe opens but case does not | Check Nuance proxy, browser local-network permission, the filtered Active Cases route, and same-case evidence |
-| Multi-Monitor connection error | Check app installation/path and local debug port 9223 |
 | Google verification prompt | Complete verification in the opened browser |
 | No eligible case | Check Today date, In Progress status, IC exclusions/allowlist |
 | Excel save fails | Close the output file if Excel has locked it and verify folder write access |

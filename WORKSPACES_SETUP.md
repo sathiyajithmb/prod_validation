@@ -40,11 +40,10 @@ if not exist .env copy .env.example .env
 notepad .env
 ```
 
-Fill all six entries with the correct passwords and save the file:
+Fill the required entries with the correct passwords and save the file:
 
 ```dotenv
 DOCPANEL_PASSWORD='your UAT password'
-PROD_DOCPANEL_PASSWORD='your production password'
 DB_PASSWORD='your Report Pending database password'
 POWERSCRIBE_PASSWORD='your PowerScribe password'
 DB_FAILURES_PASSWORD='your Report Failures database password'
@@ -74,7 +73,7 @@ notepad utill.py
 | `POWERSCRIBE_DEPLOYMENT_URL` | The script can use this ClickOnce URL when no valid executable path is set. Confirm that the application can launch manually. |
 | `ZENDESK_URL`, `ZENDESK_USERNAME` | Check the tickets view URL and sign-in email. |
 
-The repository name does not select Production. `BASE_URL` and the active `DOCPANEL_EMAIL` / `DOCPANEL_PASSWORD` settings control the login. Adding `PROD_BASE_URL` alone does not switch the script to Production.
+The repository name does not select Production. `BASE_URL` and the active `DOCPANEL_EMAIL` / `DOCPANEL_PASSWORD` settings control the login. There are no separate PROD_* login settings; use the selected user profile with the configured BASE_URL.
 
 ### Database connection example
 
@@ -146,7 +145,7 @@ Example:
 .venv\Scripts\python.exe test\open_docpanel_cases.py --check report_pending
 ```
 
-PowerScribe and Multi-Monitor are currently excluded from the default full run. PowerScribe requires PowerScribe One and the DocPanel Nuance proxy on the WorkSpace. Run it explicitly with `--check powerscribe`.
+PowerScribe is currently excluded from the default full run. PowerScribe requires PowerScribe One and the DocPanel Nuance proxy on the WorkSpace. Run it explicitly with `--check powerscribe`.
 
 Keep the WorkSpaces session open and unlocked during desktop checks. Complete DocPanel MFA or Google verification when prompted.
 

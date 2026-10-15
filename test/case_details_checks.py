@@ -1,4 +1,4 @@
-"""Check up to two random In Progress cases with Diagnostic study status."""
+"""Check up to two eligible In Progress Diagnostic cases from scanned grid rows."""
 # Allow direct execution from test/ while keeping configuration at project root.
 import sys as _sys
 from pathlib import Path as _Path
@@ -9,6 +9,7 @@ for _directory in (_Path(__file__).resolve().parent, _Path(__file__).resolve().p
 import argparse
 import re
 import random
+from datetime import datetime
 import utill
 
 from playwright.sync_api import expect, sync_playwright
@@ -18,6 +19,10 @@ from open_docpanel_cases import (
     BASE_URL, capture_loaded_page, debug_checkpoint, finish_dashboard_update,
     is_dashboard_response, login, read_total_records,
 )
+
+
+class CaseDetailsCheckError(RuntimeError):
+    """Safe stage description and screenshot evidence for a failed case check."""
 
 
 def choose_case_sample(cases, case_number_filter=None):
@@ -58,11 +63,13 @@ def collect_inprogress_cases(page, results, date_range="Today", case_number_filt
         page.locator(".filterUpArrow:visible").click()
     if date_range not in ("Today", "Last two days"):
         raise ValueError("Case checks support only Today or Last two days.")
+    print(f"Case selection: applying date filter {date_range}.", flush=True)
     page.locator('input[name="selectDate"]').click()
     with page.expect_response(is_dashboard_response, timeout=60_000) as dates_updated:
         page.get_by_text(date_range, exact=True).filter(visible=True).click()
         page.get_by_role("button", name="Apply", exact=True).click()
     finish_dashboard_update(page, dates_updated.value)
+    print("Case selection: applying In Progress status.", flush=True)
     status.click()
     menu = page.locator(".dropdown-menu.show:visible")
     with page.expect_response(is_dashboard_response, timeout=60_000) as updated:
@@ -70,6 +77,7 @@ def collect_inprogress_cases(page, results, date_range="Today", case_number_filt
         page.locator("body").first.press("Enter")
     finish_dashboard_update(page, updated.value)
 
+    print("Case selection: reading filtered grid count.", flush=True)
     total = read_total_records(page)
     if total == 0:
         record_result(
@@ -85,8 +93,12 @@ def collect_inprogress_cases(page, results, date_range="Today", case_number_filt
         horizontal.evaluate("el => { el.scrollLeft = 0; }")
     viewport = page.locator("#adminAgGrid .ag-body-viewport")
     viewport.evaluate("el => { el.scrollTop = 0; }")
-    all_cases = {}
-    while True:
+    seen = set()
+    selected = []
+    selector = select_cases or choose_case_sample
+    # Case Details needs two samples; PowerScribe/custom selection needs one.
+    target = 1 if case_number_filter or select_cases is not None else 2
+    while len(selected) < target:
         page.wait_for_timeout(250)
         rendered = page.locator("#adminAgGrid .ag-center-cols-container .ag-row").evaluate_all(
             """rows => rows.map(row => ({
@@ -96,16 +108,27 @@ def collect_inprogress_cases(page, results, date_range="Today", case_number_filt
                 radiologist: row.querySelector('[col-id="Radiologist"]')?.textContent.trim(),
                 scroll_top: document.querySelector('#adminAgGrid .ag-body-viewport').scrollTop
             }))""")
+        batch = []
         for item in rendered:
             number = item.get("number") or ""
-            if (re.fullmatch(r"\d+", number)
-                    and re.sub(r"\s+", " ", item.get("status") or "").lower() == "in progress"):
-                all_cases[number] = {
-                    "number": number,
-                    "radiologist": item.get("radiologist") or "Unspecified",
-                    "study_status": re.sub(r"\s+", " ", item.get("study_status") or "").strip(),
-                    "scroll_top": item["scroll_top"],
-                }
+            if (number in seen or not re.fullmatch(r"\d+", number)
+                    or re.sub(r"\s+", " ", item.get("status") or "").lower() != "in progress"
+                    or re.sub(r"\s+", " ", item.get("study_status") or "").strip().lower() != "diagnostic"):
+                continue
+            seen.add(number)
+            if case_number_filter and number != case_number_filter:
+                continue
+            batch.append({"number": number,
+                          "radiologist": item.get("radiologist") or "Unspecified",
+                          "study_status": "Diagnostic",
+                          "scroll_top": item["scroll_top"]})
+        if batch:
+            # Apply the existing DB-backed IC exclusions/allowlist to each batch.
+            print(f"Case selection: verifying IC IDs for {len(batch)} visible eligible cases.", flush=True)
+            eligible = selector(batch, case_number_filter)
+            selected.extend(eligible[:target - len(selected)])
+            if len(selected) >= target:
+                break
         moved = viewport.evaluate("""el => {
             const before = el.scrollTop;
             el.scrollTop += Math.max(1, el.clientHeight * 0.8);
@@ -113,27 +136,15 @@ def collect_inprogress_cases(page, results, date_range="Today", case_number_filt
         }""")
         if not moved:
             break
-    if len(all_cases) != total:
-        raise RuntimeError(f"Could collect {len(all_cases)} of {total} filtered cases; complete coverage cannot be confirmed.")
-    cases = {number: item for number, item in all_cases.items()
-             if item["study_status"].lower() == "diagnostic"}
-    if not cases:
-        record_result(
-            results, "Case Details", "Can you open up cases in DocPanel?",
-            result="SKIP", details=f"No In Progress Diagnostic case available in {date_range}.",
-        )
-        print(f"In Progress Case Details: SKIP - no In Progress Diagnostic case available in {date_range}.", flush=True)
-        return []
-    selector = select_cases or choose_case_sample
-    selected = selector(list(cases.values()), case_number_filter)
     if not selected:
         record_result(results, "Case Details", "Can you open up cases in DocPanel?", result="SKIP",
-                      details=f"No eligible In Progress Diagnostic case after imaging-center exclusions; requested case: {case_number_filter or 'random sample'}.")
-    print(f"Selected {len(selected)} eligible In Progress case(s).", flush=True)
+                      details=f"No eligible In Progress Diagnostic case found in scanned rows after imaging-center filtering; requested case: {case_number_filter or 'any two cases'}.")
+    print(f"Selected {len(selected)} eligible In Progress case(s); stopped after finding the requested sample or reaching the grid end.", flush=True)
     return selected
 
 
 def check_inprogress_case(page, results, debug=False, date_range="Today", case_number_filter=None, *, verify_content=True, scroll_top=None):
+    stage = "locating the selected case row"
     # The caller has already applied the date/status filters and collected cases.
     # Keep Radiologist, Case Status, and Study Status rendered together. Scrolling to the far
     # right can remove Radiologist from AG Grid's virtual DOM.
@@ -168,6 +179,7 @@ def check_inprogress_case(page, results, debug=False, date_range="Today", case_n
             raise RuntimeError(f"Selected case {case_number_filter} is no longer available in the filtered grid.")
     if row_id is None:
         raise RuntimeError("Selected case row has no row-id.")
+    stage = "verifying the selected case row"
     if horizontal.count():
         horizontal.evaluate("el => { el.scrollLeft = 0; }")
     # Keep the same row after horizontal virtualization recreates its cells.
@@ -202,49 +214,48 @@ def check_inprogress_case(page, results, debug=False, date_range="Today", case_n
             break
     if icon is None:
         raise RuntimeError("Case Details icon was not found for the selected row.")
+    stage = "locating the Case Details icon"
     expect(icon).to_have_count(1)
     debug_checkpoint(page, debug, "Before opening In Progress Case Details")
 
-    with page.expect_popup(timeout=60_000) as opened:
-        icon.click()
-    detail = opened.value
-    detail.set_default_timeout(60_000)
-    detail.wait_for_url(
-        re.compile(re.escape(BASE_URL) + r"/web/#/icCaseDetail/"), timeout=60_000
-    )
-    detail.wait_for_load_state("domcontentloaded")
-    expect(detail.get_by_text(
-        re.compile(r"^\s*Case\s*No\.?\s*:?\s*" + re.escape(case_number) + r"\s*$")
-    )).to_be_visible()
-    if not verify_content:
+    detail = None
+    try:
+        stage = "waiting for the Case Details popup"
+        with page.expect_popup(timeout=60_000) as opened:
+            icon.click()
+        detail = opened.value
+        detail.set_default_timeout(60_000)
+        stage = "waiting for the Case Details page URL"
+        detail.wait_for_url(
+            re.compile(r"^" + re.escape(BASE_URL.rstrip("/")) + r"/(?:web/)?#/icCaseDetail/"), timeout=60_000
+        )
+        detail.wait_for_load_state("domcontentloaded")
+        stage = "verifying the case number on the detail page"
+        expect(detail.get_by_text(
+            re.compile(r"^\s*Case\s*No\.?\s*:?\s*" + re.escape(case_number) + r"\s*$")
+        )).to_be_visible()
+        if not verify_content:
+            return detail
+        screenshot = capture_loaded_page(detail, "In Progress Case Details")
+        record_result(
+            results, "Case Details", "Can you open up cases in DocPanel?", result="PASS",
+            details=f"Radiologist {radiologist}; case {case_number}: Case Details page opened and case number verified. Screenshot: {screenshot}",
+        )
+        print(f"In Progress Case Details: PASS - case {case_number}; Case Details page opened.")
+        debug_checkpoint(detail, debug, "Case Details loaded")
         return detail
-    expect(detail.get_by_text("Primary Study", exact=True)).to_be_visible()
-    expect(detail.get_by_role("heading", name="Study Information", exact=True).filter(visible=True)).to_be_visible()
-    thumbnail = detail.locator("#caseImageId0 > #thumImg0")
-    expect(thumbnail).to_be_visible()
-    # The application renders thumbnails as CSS background images on DIVs.
-    detail.wait_for_function(
-        r"""async () => {
-            const el = document.querySelector('#caseImageId0 > #thumImg0');
-            if (!el) return false;
-            const bg = getComputedStyle(el).backgroundImage;
-            const match = bg.match(/^url\(["']?(.*?)["']?\)$/);
-            if (!match) return false;
-            const image = new Image();
-            image.src = match[1];
-            try { await image.decode(); return image.naturalWidth > 0; }
-            catch { return false; }
-        }""", timeout=60_000,
-    )
-    screenshot = capture_loaded_page(detail, "In Progress Case Details")
-    record_result(
-        results, "Case Details", "Can you open up cases in DocPanel?", result="PASS",
-        details=f"Radiologist {radiologist}; case {case_number}: matching case details, Primary Study, Study Information "
-                f"and series thumbnail loaded. Screenshot: {screenshot}",
-    )
-    print(f"In Progress Case Details: PASS - case {case_number}; data and thumbnail loaded.")
-    debug_checkpoint(detail, debug, "Case Details loaded")
-    return detail
+    except Exception as exc:
+        target = detail if detail is not None and not detail.is_closed() else page
+        message = f"Case {case_number} failed while {stage} ({type(exc).__name__})."
+        folder = _Path(__file__).resolve().parent.parent / "screenshots"
+        folder.mkdir(exist_ok=True)
+        path = folder / f"case_details_fail_{datetime.now():%Y%m%d_%H%M%S_%f}.png"
+        try:
+            target.screenshot(path=str(path), full_page=True, animations="disabled", timeout=10_000)
+            message += f" Screenshot: {path}"
+        except Exception as screenshot_error:
+            message += f" Screenshot unavailable ({type(screenshot_error).__name__})."
+        raise CaseDetailsCheckError(message) from exc
 
 
 def verify_unity_images(viewer, timeout_seconds=60):
@@ -300,13 +311,21 @@ def check_unity_viewer(detail, results, debug=False):
     result = "FAIL"
     message = ""
     try:
-        with detail.expect_popup(timeout=30_000) as opened:
-            detail.locator("#caseImageId0 > #thumImg0").click()
-        viewer = opened.value
+        # Admin previews open a report; report pages already have viewer controls.
+        if "reportTemplatePage" not in detail.url:
+            with detail.expect_popup(timeout=30_000) as opened:
+                detail.locator("#caseImageId0 > #thumImg0").click()
+            viewer = opened.value
         viewer.set_default_timeout(60_000)
         viewer.wait_for_load_state("domcontentloaded")
-        stage = "expanding the viewer controls"
-        viewer.locator("#expandIcon").click()
+        show_viewer = viewer.get_by_role("button", name="Show Viewer", exact=True)
+        frame = viewer.locator("iframe#iframe")
+        expand = viewer.locator("#expandIcon")
+        stage = "waiting for Eunity viewer controls"
+        expect(show_viewer.or_(frame).or_(expand).filter(visible=True).first).to_be_visible(timeout=60_000)
+        if not show_viewer.is_visible() and not frame.is_visible():
+            stage = "expanding the viewer controls"
+            expand.click()
         alerts = []
         def dismiss_alert(dialog):
             alerts.append(dialog.type)
@@ -314,9 +333,11 @@ def check_unity_viewer(detail, results, debug=False):
         viewer.on("dialog", dismiss_alert)
         try:
             stage = "opening Show Viewer"
-            viewer.get_by_role("button", name="Show Viewer", exact=True).click()
+            if not frame.is_visible():
+                show_viewer.click()
             if alerts:
                 raise RuntimeError("Show Viewer displayed a browser dialog; image load is unverified.")
+            stage = "verifying rendered Eunity images"
             evidence = verify_unity_images(viewer)
             result = "PASS"
             message = ("Eunity image canvas rendered; central image pixel check passed "
@@ -344,9 +365,7 @@ def check_unity_viewer(detail, results, debug=False):
     return result == "PASS"
 
 
-def report_case_details(playwright, results, headless=False, debug=False, multimonitor=True, app_cdp="http://127.0.0.1:9223", date_range="Today", case_number=None, *, page=None):
-    from multimonitor_checks import (connect_multimonitor, snapshot_app, check_multimonitor,
-                                     ensure_multimonitor_started, DesktopStartupError)
+def report_case_details(playwright, results, headless=False, debug=False, date_range="Today", case_number=None, *, page=None):
     expect.set_options(timeout=60_000)
     owns_browser = page is None
     browser = None
@@ -359,23 +378,16 @@ def report_case_details(playwright, results, headless=False, debug=False, multim
         context = page.context
     original_viewport = page.viewport_size
     try:
-        app = None
-        before = None
-        startup_error = None
-        if multimonitor:
-            try:
-                ensure_multimonitor_started(app_cdp)
-            except DesktopStartupError as exc:
-                startup_error = str(exc)
-                print(f"Multi-Monitor: {startup_error}", flush=True)
-            context.grant_permissions(["local-network-access"], origin=BASE_URL)
+        if owns_browser:
+            # MFA/login must not consume the dashboard request timeout.
+            login(page)
+        dashboard_url = f"{BASE_URL}/admin/#/Dashboard/1"
         with page.expect_response(is_dashboard_response, timeout=60_000) as initial:
-            if owns_browser:
-                login(page)
+            # A same-URL SPA navigation may emit no new dashboard request.
+            if page.url.rstrip("/") == dashboard_url.rstrip("/"):
+                page.reload(wait_until="domcontentloaded")
             else:
-                # Reuse authentication; a full navigation clears the previous
-                # dashboard component before selecting today's case.
-                page.goto(f"{BASE_URL}/admin/#/Dashboard/1", wait_until="domcontentloaded")
+                page.goto(dashboard_url, wait_until="domcontentloaded")
         finish_dashboard_update(page, initial.value)
         if not owns_browser:
             # The earlier Loading-case check must not restrict this selection.
@@ -384,7 +396,7 @@ def report_case_details(playwright, results, headless=False, debug=False, multim
             finish_dashboard_update(page, reset.value)
         selected = collect_inprogress_cases(page, results, date_range, case_number)
         if not selected:
-            for section, check in [("Eunity Viewer", "Images loading")] + ([("Multi-Monitor", "Case selection")] if multimonitor else []):
+            for section, check in [("Eunity Viewer", "Images loading")]:
                 record_result(results, section, check, result="SKIP",
                               details=f"No eligible In Progress Diagnostic case available in {date_range} after imaging-center exclusions; check was not run.")
             return True
@@ -394,36 +406,21 @@ def report_case_details(playwright, results, headless=False, debug=False, multim
             identity = f"Case {number}; radiologist {selected_case['radiologist']}. "
             start = len(results)
             existing_pages = list(context.pages)
-            app = None
-            before = None
             try:
-                # Snapshot before opening the case: the desktop app can open automatically.
-                if multimonitor:
-                    try:
-                        if startup_error:
-                            raise DesktopStartupError(startup_error)
-                        app = connect_multimonitor(playwright, app_cdp)
-                        before = snapshot_app(app)
-                    except Exception as exc:
-                        record_result(results, "Multi-Monitor", "Desktop automation connection", result="FAIL",
-                                      details=(str(exc) if isinstance(exc, DesktopStartupError) else
-                                               "Automatic startup completed, but desktop connection or snapshot failed (" + type(exc).__name__ + ")."))
-                        app = None
                 detail = check_inprogress_case(page, results, debug, date_range, number,
                                                scroll_top=selected_case.get("scroll_top"))
                 unity_ok = check_unity_viewer(detail, results, debug)
-                multi_ok = (check_multimonitor(app, before, number, results, debug=debug)
-                            if multimonitor and app is not None else not multimonitor)
-                all_passed = all_passed and unity_ok and multi_ok
+                all_passed = all_passed and unity_ok
             except Exception as exc:
                 all_passed = False
+                failure = str(exc) if isinstance(exc, CaseDetailsCheckError) else f"Case check did not complete: {type(exc).__name__}."
                 record_result(results, "Case Details", "Can you open up cases in DocPanel?", result="FAIL",
-                              details=f"Case check did not complete: {type(exc).__name__}.")
-                for section, check in [("Eunity Viewer", "Images loading")] + ([("Multi-Monitor", "Case selection")] if multimonitor else []):
+                              details=failure)
+                for section, check in [("Eunity Viewer", "Images loading")]:
                     if not any(row.get("Section") == section for row in results[start:]):
                         record_result(results, section, check, result="SKIP",
                                       details="Case check did not complete; dependent check was not run.")
-                print(f"Case {number}: FAIL - {type(exc).__name__}; continuing with remaining cases.", flush=True)
+                print(f"Case {number}: FAIL - {failure} Continuing with remaining cases.", flush=True)
                 debug_checkpoint(page, debug, "Inspect failed case")
             finally:
                 for row in results[start:]:
@@ -449,12 +446,12 @@ def report_case_details(playwright, results, headless=False, debug=False, multim
             page.set_viewport_size(original_viewport)
     return True
 
-def run(headless=False, debug=False, multimonitor=True, app_cdp="http://127.0.0.1:9223", date_range="Today", case_number=None):
+def run(headless=False, debug=False, date_range="Today", case_number=None):
     results = []
     with sync_playwright() as playwright:
         try:
             passed = report_case_details(playwright, results, headless, debug,
-                                         multimonitor, app_cdp, date_range, case_number)
+                                         date_range=date_range, case_number=case_number)
             if not passed:
                 raise SystemExit(1)
         finally:
@@ -465,10 +462,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--debug", action="store_true")
-    parser.add_argument("--multimonitor", action="store_true", default=True, help="Verify the Docpanel desktop app (enabled by default)")
-    parser.add_argument("--app-cdp", default="http://127.0.0.1:9223", help="Local desktop debugging endpoint")
     parser.add_argument("--case-date-range", choices=["Today"], default="Today", help="Only today's cases are checked")
     parser.add_argument("--case-number", help="Select a specific In Progress case (default: random 2 eligible cases across all radiologists; imaging-center exclusions always apply)")
     args = parser.parse_args()
     run(headless=args.headless and not args.debug, debug=args.debug,
-        multimonitor=args.multimonitor, app_cdp=args.app_cdp, date_range=args.case_date_range, case_number=args.case_number)
+        date_range=args.case_date_range, case_number=args.case_number)

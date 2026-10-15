@@ -34,19 +34,67 @@ class PowerScribeStartupError(RuntimeError):
     pass
 
 
+def _integrity_rid(pid):
+    """Return a process integrity RID, or None when Windows denies inspection."""
+    import ctypes
+    import ctypes.wintypes as wintypes
+    kernel = ctypes.windll.kernel32
+    advapi = ctypes.windll.advapi32
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    advapi.OpenProcessToken.restype = wintypes.BOOL
+    advapi.GetTokenInformation.restype = wintypes.BOOL
+    process = kernel.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not process:
+        return None
+    token = wintypes.HANDLE()
+    try:
+        if not advapi.OpenProcessToken(process, 0x0008, ctypes.byref(token)):
+            return None
+        size = wintypes.DWORD()
+        advapi.GetTokenInformation(token, 25, None, 0, ctypes.byref(size))  # TokenIntegrityLevel
+        if not size.value:
+            return None
+        buffer = ctypes.create_string_buffer(size.value)
+        if not advapi.GetTokenInformation(token, 25, buffer, size, ctypes.byref(size)):
+            return None
+        sid = ctypes.cast(buffer, ctypes.POINTER(ctypes.c_void_p))[0]
+        subauthorities = ctypes.cast(sid, ctypes.POINTER(ctypes.c_ubyte))[1]
+        return ctypes.cast(sid + 8 + (subauthorities - 1) * 4,
+                           ctypes.POINTER(wintypes.DWORD)).contents.value
+    finally:
+        if token:
+            kernel.CloseHandle(token)
+        kernel.CloseHandle(process)
+
+
 def powerscribe_window():
+    import ctypes
     from pywinauto import Desktop
     windows = [w for w in Desktop(backend="uia").windows()
                if w.element_info.automation_id == "AutId_PowerScribeOne"
                or "powerscribe" in w.window_text().lower()]
     visible = [w for w in windows if w.is_visible()]
-    if not visible:
-        raise PowerScribeNotOpen("PowerScribe window was not found.")
-    main = [w for w in visible if w.element_info.automation_id == "AutId_PowerScribeOne"]
-    return main[0] if main else visible[0]
+    if visible:
+        main = [w for w in visible if w.element_info.automation_id == "AutId_PowerScribeOne"]
+        return main[0] if main else visible[0]
+
+    # Windows UI Automation hides controls of higher-integrity app windows.
+    # Find the native HWND so we can distinguish that from a slow/missing launch.
+    hwnd = ctypes.windll.user32.FindWindowW(None, "PowerScribe One")
+    if hwnd and ctypes.windll.user32.IsWindowVisible(hwnd):
+        pid = ctypes.c_ulong()
+        ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        app_rid = _integrity_rid(pid.value)
+        current_rid = _integrity_rid(ctypes.windll.kernel32.GetCurrentProcessId())
+        if app_rid is not None and current_rid is not None and app_rid > current_rid:
+            raise PowerScribeStartupError(
+                "PowerScribe is open but runs with higher Windows privileges than this automation. "
+                "Run the PowerShell window as Administrator, then start this check again."
+            )
+    raise PowerScribeNotOpen("PowerScribe window was not found.")
 
 
-def ensure_powerscribe_started(timeout=45):
+def ensure_powerscribe_started(timeout=90):
     import utill
     try:
         return powerscribe_window()
