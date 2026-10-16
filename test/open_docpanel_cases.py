@@ -829,8 +829,8 @@ def run(playwright: Playwright, debug: bool = False, check: str = "all") -> None
     finally:
         try:
             try:
-                # PowerScribe stays opt-in because its desktop bridge needs separate troubleshooting.
-                if check == "powerscribe":
+                # Run PowerScribe during full runs or when explicitly selected.
+                if check in ("all", "powerscribe"):
                     from powerscribe_case_checks import report_powerscribe
                     # Keep the independent IC selection but reuse this DocPanel login.
                     report_powerscribe(playwright, results, debug=debug,
