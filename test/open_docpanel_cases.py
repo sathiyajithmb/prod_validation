@@ -483,16 +483,20 @@ def check_assignment_table(page: Page, name: str) -> tuple[int, str]:
     grid = assignment_grid(page, name)
     expect(grid).to_have_count(1, timeout=90_000)
     expect(page.locator("#spinner:visible")).to_have_count(0, timeout=90_000)
-    expect(grid.locator(".ag-overlay-loading-center:visible")).to_have_count(
-        0, timeout=90_000
-    )
     rows = grid.locator(".ag-center-cols-container .ag-row")
     if count:
+        # A rendered data row is stronger evidence of completion than the AG
+        # Grid loading overlay, which can linger after its data request ends.
         expect(rows.first).to_be_visible(timeout=90_000)
         expect(rows.first).not_to_be_empty(timeout=90_000)
     else:
+        # For a legitimately empty tab, require both overlays to show the final
+        # empty state before accepting the zero-row result.
+        expect(grid.locator(".ag-overlay-loading-center:visible")).to_have_count(
+            0, timeout=90_000
+        )
         expect(rows).to_have_count(0, timeout=90_000)
-        expect(grid.locator(".ag-overlay-no-rows-center")).to_be_visible(timeout=90_000)
+        expect(grid.locator(".ag-overlay-no-rows-center:visible")).to_be_visible(timeout=90_000)
     print(f"  {name}: verifying grid row-count attribute", flush=True)
     row_count = grid.locator("[role=treegrid]").get_attribute("aria-rowcount")
     if row_count is None:
@@ -537,6 +541,15 @@ def report_case_assignment(page: Page, results=None) -> None:
         )
     finish_assignment_request(page, initial.value)
     try:
+        # The application can restore a previously selected view (for example,
+        # Same Room) instead of defaulting to Un-Fulfilled. Select the expected
+        # tab explicitly before validating its cached grid.
+        unfulfilled_button = assignment_button(page, "Un-Fulfilled")
+        expect(unfulfilled_button).to_be_visible(timeout=90_000)
+        if not re.search(r"\blightgreenstyle\b", unfulfilled_button.get_attribute("class") or ""):
+            unfulfilled_button.click()
+            expect(unfulfilled_button).to_have_class(re.compile(r"\blightgreenstyle\b"), timeout=90_000)
+            wait_for_results(page)
         _, cached_unfulfilled_rows = check_assignment_table(page, "Un-Fulfilled")
     except (AssertionError, PlaywrightError, RuntimeError) as exc:
         reason = str(exc).splitlines()[0] if str(exc) else type(exc).__name__

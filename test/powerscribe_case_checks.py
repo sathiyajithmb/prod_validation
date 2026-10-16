@@ -17,11 +17,36 @@ from playwright.sync_api import expect, sync_playwright
 from case_details_checks import collect_inprogress_cases, check_inprogress_case
 from database_checks import read_query
 from excel_report import record_result, save_excel_report
-from open_docpanel_cases import BASE_URL, login, is_dashboard_response, finish_dashboard_update
+from open_docpanel_cases import (
+    BASE_URL, login, is_dashboard_response, read_total_records,
+)
 from powerscribe_checks import run_worker, record_case_check
 
 
 POWERSCRIBE_CASE_DATE_RANGE = "Last two days"
+
+def finish_powerscribe_dashboard_update(page, response):
+    """Wait for this dashboard request and its grid, without global network-idle."""
+    if not response.ok:
+        raise RuntimeError(f"Dashboard request failed: HTTP {response.status}")
+    request = response.request
+    deadline = time.monotonic() + 60
+    while request.timing.get("responseEnd", -1) < 0:
+        if request.failure:
+            raise RuntimeError("Dashboard request did not finish successfully.")
+        if time.monotonic() >= deadline:
+            raise RuntimeError("Dashboard request completion timed out after 60 seconds.")
+        page.wait_for_timeout(100)
+
+    # DocPanel keeps unrelated background requests active, so networkidle is
+    # unreliable here. Wait for the dashboard's own loading indicators instead.
+    expect(page.locator("#spinner:visible")).to_have_count(0, timeout=90_000)
+    grid = page.locator("#adminAgGrid")
+    expect(grid).to_be_visible(timeout=30_000)
+    expect(grid.locator(".ag-overlay-loading-center:visible")).to_have_count(
+        0, timeout=90_000
+    )
+    read_total_records(page)
 
 
 def imaging_center_ids():
@@ -81,7 +106,7 @@ def filter_imaging_center(page, name):
         control.click()
         with page.expect_response(is_dashboard_response, timeout=60_000) as updated:
             page.get_by_role("button", name="Apply", exact=True).click()
-        finish_dashboard_update(page, updated.value)
+        finish_powerscribe_dashboard_update(page, updated.value)
     except Exception as exc:
         message = f"Imaging center {name}: failed while {stage} ({type(exc).__name__})."
         try:
@@ -149,7 +174,8 @@ def open_powerscribe_case(page, item, debug=False):
     try:
         stage = "opening the admin preview"
         detail = check_inprogress_case(page, [], debug, POWERSCRIBE_CASE_DATE_RANGE, item["number"],
-                                      verify_content=False, scroll_top=item.get("scroll_top"))
+                                      verify_content=False, scroll_top=item.get("scroll_top"),
+                                      radiologist_override=item.get("radiologist"))
         stage = "returning to radiologist Active Cases using the back icon"
         back = detail.locator(".back-icon:visible")
         expect(back).to_have_count(1, timeout=60_000)
@@ -195,11 +221,14 @@ def prepare_shared_dashboard(page):
     dashboard_url = f"{BASE_URL}/admin/#/Dashboard/1"
     if page.url.rstrip("/") != dashboard_url.rstrip("/"):
         page.goto(dashboard_url, wait_until="domcontentloaded")
-    # Do not reload an already open dashboard or wait for its ALL-cases request.
+    # Settle Reset before applying the IC filter; otherwise its response may be
+    # mistaken for the filter response and leave the dashboard in Loading state.
     reset = page.get_by_role("button", name="Reset", exact=True)
     expect(reset).to_be_visible(timeout=60_000)
     expect(reset).to_be_enabled(timeout=60_000)
-    reset.click()
+    with page.expect_response(is_dashboard_response, timeout=60_000) as cleared:
+        reset.click()
+    finish_powerscribe_dashboard_update(page, cleared.value)
     status = page.locator("#CaseStatus")
     if not status.is_visible():
         page.locator(".filterUpArrow:visible").click()

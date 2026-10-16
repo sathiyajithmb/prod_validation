@@ -143,7 +143,7 @@ def collect_inprogress_cases(page, results, date_range="Today", case_number_filt
     return selected
 
 
-def check_inprogress_case(page, results, debug=False, date_range="Today", case_number_filter=None, *, verify_content=True, scroll_top=None):
+def check_inprogress_case(page, results, debug=False, date_range="Today", case_number_filter=None, *, verify_content=True, scroll_top=None, radiologist_override=None):
     stage = "locating the selected case row"
     # The caller has already applied the date/status filters and collected cases.
     # Keep Radiologist, Case Status, and Study Status rendered together. Scrolling to the far
@@ -187,7 +187,12 @@ def check_inprogress_case(page, results, debug=False, date_range="Today", case_n
         "xpath=self::*[@row-id=" + repr(row_id) + "]"
     )
     expect(row).to_be_visible(timeout=60_000)
-    radiologist = row.locator('[col-id="Radiologist"]').inner_text().strip() or "Unspecified"
+    if radiologist_override is None:
+        radiologist = row.locator('[col-id="Radiologist"]').inner_text().strip() or "Unspecified"
+    else:
+        # The PowerScribe path already captured this value during case selection.
+        # Avoid locating a horizontally virtualized column when opening its preview.
+        radiologist = radiologist_override or "Unspecified"
     print(f"Selected radiologist: {radiologist}", flush=True)
     expect(row.locator('[col-id="Case Status"]')).to_have_text(
         re.compile(r"^\s*In Progress\s*$", re.I)
